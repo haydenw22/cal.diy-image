@@ -1,0 +1,115 @@
+name: Build Cal.diy image
+
+# Builds calcom/cal.diy (MIT) from source and publishes it to GHCR, because upstream
+# ships no prebuilt image. Mirrors upstream's own release-docker build: the Next.js
+# build needs a reachable Postgres, so buildx shares the database container's network.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "calcom/cal.diy branch, tag or commit SHA to build"
+        default: "main"
+        required: true
+      webapp_url:
+        description: "Public URL baked into the static build"
+        default: "https://book.whittledigitalsolutions.com"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/cal.diy
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Checkout calcom/cal.diy
+        uses: actions/checkout@v4
+        with:
+          repository: calcom/cal.diy
+          ref: ${{ inputs.upstream_ref }}
+
+      - name: Resolve upstream commit
+        id: up
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=10 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(git log -1 --format=%cd --date=format:%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start build-time database
+        run: |
+          grep -o '^[^#]*' .env.example > .env
+          docker compose up -d database
+          sleep 10
+          docker compose ps database
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            network=container:database
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./
+          file: ./Dockerfile
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.up.outputs.date }}-${{ steps.up.outputs.short }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Cal.diy built from calcom/cal.diy@${{ steps.up.outputs.sha }}
+            org.opencontainers.image.revision=${{ steps.up.outputs.sha }}
+            org.opencontainers.image.licenses=MIT
+          build-args: |
+            NEXT_PUBLIC_WEBAPP_URL=${{ inputs.webapp_url }}
+            NEXT_PUBLIC_API_V2_URL=${{ inputs.webapp_url }}/api/v2
+            NEXT_PUBLIC_LICENSE_CONSENT=agree
+            CALCOM_TELEMETRY_DISABLED=1
+            DATABASE_URL=postgresql://unicorn_user:magical_password@localhost:5432/calendso
+            DATABASE_DIRECT_URL=postgresql://unicorn_user:magical_password@localhost:5432/calendso
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke --network stack -p 3000:3000 \
+            -e DATABASE_URL=postgresql://unicorn_user:magical_password@database/calendso \
+            -e DATABASE_DIRECT_URL=postgresql://unicorn_user:magical_password@database/calendso \
+            -e NEXTAUTH_SECRET=smoke-test-only-secret-000000000000000000000 \
+            -e CALENDSO_ENCRYPTION_KEY=smoke-test-only-key-00000000000 \
+            "$IMAGE:latest"
+          for i in $(seq 1 90); do
+            code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:3000/auth/login || true)
+            echo "attempt $i: HTTP $code"
+            if [ "$code" = "200" ] || [ "$code" = "307" ]; then exit 0; fi
+            sleep 5
+          done
+          docker logs smoke | tail -100
+          exit 1
+
+      - name: Push image
+        run: docker push --all-tags "$IMAGE"
+
+      - name: Summary
+        run: |
+          echo "Built \`$IMAGE:${{ steps.up.outputs.date }}-${{ steps.up.outputs.short }}\` from calcom/cal.diy@${{ steps.up.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
