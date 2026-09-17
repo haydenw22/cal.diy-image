@@ -64,6 +64,16 @@ jobs:
             fi
           done
 
+      - name: Relax admin password length (15 -> 7)
+        # Single-user home instance: admins follow the same length rule as normal users
+        # (7+ chars, upper + lower case, a number). Fails loudly if upstream changes the file.
+        run: |
+          f=packages/lib/auth/isPasswordValid.ts
+          test "$(grep -c 'password.length > 14' "$f")" = "2"
+          sed -i 's/password.length > 14/password.length > 6/g' "$f"
+          sed -i 's/"password_hint_admin_min": "Minimum 15 characters long"/"password_hint_admin_min": "Minimum 7 characters long"/' packages/i18n/locales/en/common.json
+          grep -n 'password.length' "$f"
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
