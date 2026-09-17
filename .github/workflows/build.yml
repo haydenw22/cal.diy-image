@@ -53,6 +53,17 @@ jobs:
           sed -i '/npx turbo prune/d' Dockerfile
           ! grep -n "turbo prune" Dockerfile
 
+      - name: Patch CacheProvider type regression
+        # Upstream issue #30170 (regression from #30140): `next build` fails type-checking
+        # <CacheProvider>. Same fix as upstream PR #30171; skipped once upstream restores it.
+        run: |
+          for f in apps/web/app/providers.tsx apps/web/pages/_app.tsx; do
+            if [ -f "$f" ] && ! grep -B1 '<CacheProvider>' "$f" | grep -q 'ts-expect-error'; then
+              sed -i 's|^\( *\)<CacheProvider>|\1{/* @ts-expect-error react-inlinesvg/provider vs @types/react mismatch (upstream #30170) */}\n\1<CacheProvider>|' "$f"
+              echo "patched $f"; grep -n -B1 '<CacheProvider>' "$f"
+            fi
+          done
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
