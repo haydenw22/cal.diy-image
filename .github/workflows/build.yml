@@ -46,6 +46,13 @@ jobs:
           echo "short=$(git rev-parse --short=10 HEAD)" >> "$GITHUB_OUTPUT"
           echo "date=$(git log -1 --format=%cd --date=format:%Y%m%d)" >> "$GITHUB_OUTPUT"
 
+      - name: Patch upstream Dockerfile
+        # `npx turbo prune --scope=a --scope=b` pulls the latest turbo, which rejects repeated
+        # --scope. The pruned ./out directory is never used by later stages, so drop the step.
+        run: |
+          sed -i '/npx turbo prune/d' Dockerfile
+          ! grep -n "turbo prune" Dockerfile
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
